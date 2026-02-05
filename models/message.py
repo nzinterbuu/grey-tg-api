@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -55,4 +55,16 @@ class Message(Base):
         nullable=False,
         default="",
         comment="Phone number, chat_id, or username of the other party",
+    )
+    telegram_message_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+        index=True,
+        comment="Telegram message id for correlation and read-receipt updates",
+    )
+    telegram_chat_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+        index=True,
+        comment="Telegram chat/peer id for read-receipt updates",
     )

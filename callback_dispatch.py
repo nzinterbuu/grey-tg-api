@@ -38,6 +38,7 @@ from config import CALLBACK_SIGNING_SECRET
 from database import SessionLocal
 from models.tenant import Tenant
 from models.tenant_auth import TenantAuth
+from models.message import Message
 from telethon_manager import build_client
 
 logger = logging.getLogger(__name__)
@@ -187,6 +188,34 @@ async def _run_dispatcher(tenant_id: uuid.UUID, callback_url: str) -> None:
 
     async def on_new_message(event: events.NewMessage.Event) -> None:
         payload = _payload_from_event(tenant_id, event)
+        # Persist inbound message to message table
+        try:
+            msg = event.message
+            text = (msg.text or "").strip() if msg.text else ""
+            sender_id = getattr(sender, "id", None) if (sender := event.sender) else event.sender_id
+            sender_id = sender_id or 0
+            sender_username = getattr(sender, "username", None) if isinstance(sender, User) else None
+            address = f"@{sender_username}" if sender_username else str(sender_id)
+            msg_date = msg.date
+            if hasattr(msg_date, "tzinfo") and msg_date.tzinfo is None:
+                from datetime import timezone
+                msg_date = msg_date.replace(tzinfo=timezone.utc)
+            message_id = getattr(msg, "id", 0) or 0
+            with SessionLocal() as db:
+                in_msg = Message(
+                    direction="in",
+                    tenant_id=tenant_id,
+                    status="received",
+                    content=text,
+                    timestamp=msg_date,
+                    address=address,
+                    telegram_message_id=message_id if message_id else None,
+                    telegram_chat_id=event.chat_id,
+                )
+                db.add(in_msg)
+                db.commit()
+        except Exception as e:
+            logger.warning("on_new_message: failed to persist message tenant_id=%s error=%s", tenant_id, e)
         asyncio.create_task(_post_callback(callback_url, payload, tenant_id))
 
     try:

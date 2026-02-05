@@ -10,15 +10,18 @@ else PHONE_NOT_IN_CONTACTS or PHONE_NOT_IN_CONTACTS_OR_NOT_ON_TELEGRAM.
 """
 
 import logging
+from datetime import timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 from telethon import errors as tg_errors
+from telethon import utils as tg_utils
 
 from database import get_session
 from models.tenant import Tenant
+from models.message import Message
 from peer_resolver import resolve_peer
 from rate_limit import check_rate_limit
 from schemas import (
@@ -124,6 +127,28 @@ async def send_message(
                 detail={"error": "send_failed", "message": str(e) or type(e).__name__},
             ) from e
 
+        # Persist outbound message to message table
+        msg_date = msg.date
+        if msg_date.tzinfo is None:
+            msg_date = msg_date.replace(tzinfo=timezone.utc)
+        try:
+            telegram_chat_id = tg_utils.get_peer_id(msg.peer_id) if getattr(msg, "peer_id", None) else None
+            out_msg = Message(
+                direction="out",
+                tenant_id=tenant_id,
+                status="sent",
+                content=body.text or "",
+                timestamp=msg_date,
+                address=peer_resolved or "",
+                telegram_message_id=msg.id,
+                telegram_chat_id=telegram_chat_id,
+            )
+            db.add(out_msg)
+            db.commit()
+        except Exception as e:
+            logger.warning("send_message: failed to persist message tenant=%s error=%s", tenant_id, e)
+            db.rollback()
+
         date_str = msg.date.isoformat() if hasattr(msg.date, "isoformat") else str(msg.date)
         return SendMessageResponse(
             ok=True,
@@ -203,6 +228,24 @@ async def send_read_receipt(
                 status_code=400,
                 detail={"error": "read_receipt_failed", "message": str(e) or type(e).__name__},
             ) from e
+
+        # Update delivery status of inbound messages in this chat up to max_id
+        try:
+            peer_id = tg_utils.get_peer_id(entity)
+            db.execute(
+                update(Message)
+                .where(
+                    Message.tenant_id == tenant_id,
+                    Message.direction == "in",
+                    Message.telegram_chat_id == peer_id,
+                    Message.telegram_message_id <= body.max_id,
+                )
+                .values(status="read")
+            )
+            db.commit()
+        except Exception as e:
+            logger.warning("send_read_receipt: failed to update message status tenant=%s error=%s", tenant_id, e)
+            db.rollback()
 
         return ReadReceiptResponse(ok=True, message="Read receipt sent.")
     finally:

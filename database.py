@@ -50,6 +50,21 @@ def init_db() -> None:
                 if r.fetchone() is None:
                     conn.execute(text(f"ALTER TABLE tenant_auth ADD COLUMN {col} {spec}"))
                     conn.commit()
+            # Message table: add telegram_* columns if missing
+            for col, spec in [
+                ("telegram_message_id", "BIGINT"),
+                ("telegram_chat_id", "BIGINT"),
+            ]:
+                r = conn.execute(
+                    text(
+                        "SELECT 1 FROM information_schema.columns "
+                        "WHERE table_name='message' AND column_name=:c"
+                    ),
+                    {"c": col},
+                )
+                if r.fetchone() is None:
+                    conn.execute(text(f"ALTER TABLE message ADD COLUMN {col} {spec}"))
+                    conn.commit()
     except Exception:
         # Column might already exist or table doesn't exist yet - ignore
         pass
