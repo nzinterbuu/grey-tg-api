@@ -84,6 +84,10 @@ class CreateTenantRequest(BaseModel):
     callback_url: str | None = Field(None, max_length=2048)
 
 
+class SetCallbackRequest(BaseModel):
+    callback_url: str | None = Field(None, max_length=2048, description="Callback URL for inbound messages; omit or null to clear.")
+
+
 class TenantResponse(BaseModel):
     id: str
     name: str
