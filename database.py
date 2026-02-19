@@ -1,8 +1,12 @@
+import logging
+
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from config import DATABASE_URL
 from models import Base, Tenant, TenantAuth, Message
+
+logger = logging.getLogger(__name__)
 
 engine = create_engine(DATABASE_URL, echo=False)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -12,7 +16,14 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     # Ensure message table exists (Message model must be imported so it's in Base.metadata)
     Message.__table__.create(bind=engine, checkfirst=True)
-    # Add missing columns if they don't exist (for existing databases)
+    with engine.connect() as conn:
+        r = conn.execute(text("SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'message'"))
+        if r.fetchone():
+            logger.info("Message table exists")
+        else:
+            logger.warning("Message table missing after create_all; creating explicitly")
+            Message.__table__.create(bind=engine, checkfirst=True)
+    # Add missing columns and migrations (for existing databases)
     try:
         with engine.connect() as conn:
             # Check if last_error column exists
@@ -123,9 +134,8 @@ def init_db() -> None:
                 if result.fetchone() is not None:
                     conn.execute(text("ALTER TABLE message DROP COLUMN telegram_chat_id"))
                     conn.commit()
-    except Exception:
-        # Column might already exist or table doesn't exist yet - ignore
-        pass
+    except Exception as e:
+        logger.warning("Message/tenant_auth migration step failed (may be harmless): %s", e)
 
 
 def get_session():

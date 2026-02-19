@@ -32,7 +32,7 @@ from typing import Any
 import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from telethon import events
+from telethon import events, utils as tg_utils
 from telethon.tl.types import User, Chat, Channel
 
 from config import CALLBACK_SIGNING_SECRET
@@ -189,45 +189,67 @@ def _ensure_utc(dt: datetime) -> datetime:
     return dt.replace(tzinfo=timezone.utc)
 
 
+def _get_chat_id_from_event(event: events.NewMessage.Event) -> int | None:
+    """Get integer chat_id from event (event.chat_id or from message.peer_id)."""
+    cid = getattr(event, "chat_id", None)
+    if cid is not None:
+        try:
+            return int(cid)
+        except (TypeError, ValueError):
+            pass
+    msg = getattr(event, "message", None)
+    if msg is not None and getattr(msg, "peer_id", None) is not None:
+        try:
+            return tg_utils.get_peer_id(msg.peer_id)
+        except Exception:
+            pass
+    return None
+
+
 async def _save_incoming_message(tenant_id: uuid.UUID, event: events.NewMessage.Event) -> None:
     """Save incoming message to database with username, phone_number, and chat_id."""
-    try:
-        msg = event.message
-        sender = event.sender
+    msg = event.message
+    sender = event.sender
         
-        # Extract username with @ prefix - prefer chat username (channel/group), then sender username
-        username: str | None = None
-        # Try to get chat entity (for channels/groups) - this is async but needed for username
-        try:
-            chat = await event.get_chat()
-            if chat:
-                un = getattr(chat, "username", None)
-                if un:
-                    username = f"@{un}" if not str(un).startswith("@") else str(un)
-        except Exception:
-            # If get_chat fails, fall back to sender username
-            pass
-        # Fallback to sender username (for direct messages or if chat username unavailable)
-        if not username and isinstance(sender, User):
-            un = getattr(sender, "username", None)
+    # Resolve chat_id as integer
+    chat_id = _get_chat_id_from_event(event)
+    if chat_id is None:
+        logger.warning(
+            "Incoming message not saved: chat_id unknown tenant_id=%s event_chat_id=%s",
+            tenant_id,
+            getattr(event, "chat_id", None),
+        )
+        return
+    
+    # Extract username with @ prefix
+    username: str | None = None
+    try:
+        chat = await event.get_chat()
+        if chat:
+            un = getattr(chat, "username", None)
             if un:
                 username = f"@{un}" if not str(un).startswith("@") else str(un)
-        
-        # Extract phone number (only available for User entities)
-        phone_number: str | None = None
-        if isinstance(sender, User):
-            ph = getattr(sender, "phone", None)
-            if ph:
-                phone_number = str(ph)
-        
-        # Extract other fields - chat_id is always available from event
-        chat_id: int = event.chat_id
-        message_id: int = getattr(msg, "id", 0) or 0
-        sender_id: int | None = getattr(sender, "id", None) if sender else event.sender_id
-        text = (msg.text or "").strip() if msg.text else None
-        date_utc = _ensure_utc(msg.date)
-        
-        # Save to database (own session so we're not tied to request lifecycle)
+    except Exception:
+        pass
+    if not username and isinstance(sender, User):
+        un = getattr(sender, "username", None)
+        if un:
+            username = f"@{un}" if not str(un).startswith("@") else str(un)
+    
+    # Phone number (User only)
+    phone_number: str | None = None
+    if isinstance(sender, User):
+        ph = getattr(sender, "phone", None)
+        if ph:
+            phone_number = str(ph)
+    
+    message_id: int = int(getattr(msg, "id", 0) or 0)
+    sender_id_raw = getattr(sender, "id", None) if sender else event.sender_id
+    sender_id: int | None = int(sender_id_raw) if sender_id_raw is not None else None
+    text = (msg.text or "").strip() if msg.text else None
+    date_utc = _ensure_utc(msg.date)
+    
+    try:
         with SessionLocal() as db:
             message = Message(
                 tenant_id=tenant_id,
@@ -244,14 +266,13 @@ async def _save_incoming_message(tenant_id: uuid.UUID, event: events.NewMessage.
             db.commit()
             db.refresh(message)
         logger.info(
-            "Saved incoming message tenant_id=%s chat_id=%s message_id=%s username=%s",
+            "Saved incoming message tenant_id=%s chat_id=%s message_id=%s",
             tenant_id,
             chat_id,
             message_id,
-            username or "None",
         )
     except Exception as e:
-        logger.exception("Failed to save incoming message tenant_id=%s error=%s", tenant_id, e)
+        logger.exception("Failed to save incoming message tenant_id=%s chat_id=%s error=%s", tenant_id, chat_id, e)
 
 
 async def _run_dispatcher(tenant_id: uuid.UUID, callback_url: str) -> None:

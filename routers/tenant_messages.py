@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from telethon import errors as tg_errors
+from telethon import utils as tg_utils
 from telethon.tl.types import User, Chat, Channel
 
 from database import get_session, SessionLocal
@@ -129,36 +130,43 @@ async def send_message(
 
         date_str = msg.date.isoformat() if hasattr(msg.date, "isoformat") else str(msg.date)
         
-        # Save outbound message to database (dedicated session so commit is always persisted).
-        # Always use msg.chat_id as the authoritative chat_id source.
-        try:
-            # Get chat_id from sent message (always available in Telethon)
-            chat_id = getattr(msg, "chat_id", None)
-            if chat_id is None:
-                # Fallback to entity.id if msg.chat_id unavailable
-                chat_id = getattr(entity, "id", None)
-            
-            # Extract username with @ prefix for User, Channel, and Chat entities
-            username: str | None = None
-            un = getattr(entity, "username", None)
-            if un:
-                username = f"@{un}" if not str(un).startswith("@") else str(un)
-            
-            # Extract phone_number (only available for User entities)
-            phone_number: str | None = None
-            if isinstance(entity, User):
-                ph = getattr(entity, "phone", None)
-                if ph:
-                    phone_number = str(ph)
-            
-            # Require chat_id for DB (non-nullable); skip only if truly unavailable
-            if chat_id is not None:
+        # Resolve chat_id: msg.chat_id (Telethon ChatGetter), msg.peer_id (get_peer_id), or entity.id
+        chat_id = getattr(msg, "chat_id", None)
+        if chat_id is None and getattr(msg, "peer_id", None) is not None:
+            try:
+                chat_id = tg_utils.get_peer_id(msg.peer_id)
+            except Exception:
+                pass
+        if chat_id is None:
+            chat_id = getattr(entity, "id", None)
+        
+        # Extract username with @ prefix; phone_number for User only
+        username: str | None = None
+        un = getattr(entity, "username", None)
+        if un:
+            username = f"@{un}" if not str(un).startswith("@") else str(un)
+        phone_number: str | None = None
+        if isinstance(entity, User):
+            ph = getattr(entity, "phone", None)
+            if ph:
+                phone_number = str(ph)
+        
+        # Save outbound message to database (dedicated session so commit is always persisted)
+        if chat_id is None:
+            logger.warning(
+                "Outbound message not saved: chat_id unknown tenant_id=%s message_id=%s msg_attrs=%s",
+                tenant_id,
+                msg.id,
+                [a for a in dir(msg) if not a.startswith("_")],
+            )
+        else:
+            try:
                 date_utc = msg.date if (getattr(msg.date, "tzinfo", None) is not None) else msg.date.replace(tzinfo=timezone.utc)
                 with SessionLocal() as session:
                     message = Message(
                         tenant_id=tenant_id,
-                        chat_id=chat_id,
-                        message_id=msg.id,
+                        chat_id=int(chat_id),
+                        message_id=int(msg.id),
                         username=username,
                         phone_number=phone_number,
                         text=body.text,
@@ -169,20 +177,17 @@ async def send_message(
                     session.add(message)
                     session.commit()
                 logger.info(
-                    "Saved outbound message tenant_id=%s chat_id=%s message_id=%s username=%s",
+                    "Saved outbound message tenant_id=%s chat_id=%s message_id=%s",
                     tenant_id,
                     chat_id,
                     msg.id,
-                    username or "None",
                 )
-            else:
-                logger.warning(
-                    "Outbound message not saved: chat_id unknown tenant_id=%s message_id=%s",
-                    tenant_id,
-                    msg.id,
-                )
-        except Exception as e:
-            logger.exception("Failed to save outbound message tenant_id=%s error=%s", tenant_id, e)
+            except Exception as e:
+                logger.exception("Failed to save outbound message tenant_id=%s error=%s", tenant_id, e)
+                raise HTTPException(
+                    status_code=500,
+                    detail={"error": "db_save_failed", "message": f"Message was sent but saving to database failed: {e!s}"},
+                ) from e
         
         return SendMessageResponse(
             ok=True,
