@@ -244,10 +244,8 @@ async def _save_incoming_message(tenant_id: uuid.UUID, event: events.NewMessage.
             phone_number = str(ph)
     
     message_id: int = int(getattr(msg, "id", 0) or 0)
-    sender_id_raw = getattr(sender, "id", None) if sender else event.sender_id
-    sender_id: int | None = int(sender_id_raw) if sender_id_raw is not None else None
-    text = (msg.text or "").strip() if msg.text else None
-    date_utc = _ensure_utc(msg.date)
+    content = (msg.text or "").strip() if msg.text else None
+    timestamp_utc = _ensure_utc(msg.date)
     
     try:
         with SessionLocal() as db:
@@ -257,10 +255,10 @@ async def _save_incoming_message(tenant_id: uuid.UUID, event: events.NewMessage.
                 message_id=message_id,
                 username=username,
                 phone_number=phone_number,
-                text=text,
-                sender_id=sender_id,
-                date=date_utc,
-                incoming=True,
+                content=content,
+                timestamp=timestamp_utc,
+                direction="in",
+                status="delivered",
             )
             db.add(message)
             db.commit()

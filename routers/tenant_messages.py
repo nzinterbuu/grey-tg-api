@@ -161,7 +161,7 @@ async def send_message(
             )
         else:
             try:
-                date_utc = msg.date if (getattr(msg.date, "tzinfo", None) is not None) else msg.date.replace(tzinfo=timezone.utc)
+                timestamp_utc = msg.date if (getattr(msg.date, "tzinfo", None) is not None) else msg.date.replace(tzinfo=timezone.utc)
                 with SessionLocal() as session:
                     message = Message(
                         tenant_id=tenant_id,
@@ -169,10 +169,10 @@ async def send_message(
                         message_id=int(msg.id),
                         username=username,
                         phone_number=phone_number,
-                        text=body.text,
-                        sender_id=None,
-                        date=date_utc,
-                        incoming=False,
+                        content=body.text,
+                        timestamp=timestamp_utc,
+                        direction="out",
+                        status="sent",
                     )
                     session.add(message)
                     session.commit()

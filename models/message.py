@@ -24,19 +24,16 @@ class Message(Base):
         nullable=False,
         index=True,
     )
-    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
-    message_id: Mapped[int] = mapped_column(BigInteger, nullable=False, name="telegram_message_id")
-    username: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    phone_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    text: Mapped[str | None] = mapped_column(Text, nullable=True, name="content")
-    sender_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    date: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-    )
-    incoming: Mapped[bool] = mapped_column(default=True, nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)  # "in" = inbound, "out" = outbound
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="sent")  # e.g. sent, delivered, read, failed
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
         nullable=False,
     )
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    message_id: Mapped[int] = mapped_column(BigInteger, nullable=False, name="telegram_message_id")
+    phone_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    username: Mapped[str | None] = mapped_column(String(255), nullable=True)
