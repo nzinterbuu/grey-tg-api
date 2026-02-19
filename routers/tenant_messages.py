@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from telethon import errors as tg_errors
-from telethon.tl.types import User
+from telethon.tl.types import User, Chat, Channel
 
 from database import get_session, SessionLocal
 from models.tenant import Tenant
@@ -129,17 +129,29 @@ async def send_message(
 
         date_str = msg.date.isoformat() if hasattr(msg.date, "isoformat") else str(msg.date)
         
-        # Save outbound message to database (dedicated session so commit is always persisted)
+        # Save outbound message to database (dedicated session so commit is always persisted).
+        # Always use msg.chat_id as the authoritative chat_id source.
         try:
-            username = None
-            phone_number = None
-            chat_id = getattr(entity, "id", None)
+            # Get chat_id from sent message (always available in Telethon)
+            chat_id = getattr(msg, "chat_id", None)
+            if chat_id is None:
+                # Fallback to entity.id if msg.chat_id unavailable
+                chat_id = getattr(entity, "id", None)
+            
+            # Extract username with @ prefix for User, Channel, and Chat entities
+            username: str | None = None
+            un = getattr(entity, "username", None)
+            if un:
+                username = f"@{un}" if not str(un).startswith("@") else str(un)
+            
+            # Extract phone_number (only available for User entities)
+            phone_number: str | None = None
             if isinstance(entity, User):
-                un = getattr(entity, "username", None)
-                username = str(un) if un else None
                 ph = getattr(entity, "phone", None)
-                phone_number = str(ph) if ph else None
-                chat_id = entity.id
+                if ph:
+                    phone_number = str(ph)
+            
+            # Require chat_id for DB (non-nullable); skip only if truly unavailable
             if chat_id is not None:
                 date_utc = msg.date if (getattr(msg.date, "tzinfo", None) is not None) else msg.date.replace(tzinfo=timezone.utc)
                 with SessionLocal() as session:
@@ -157,9 +169,16 @@ async def send_message(
                     session.add(message)
                     session.commit()
                 logger.info(
-                    "Saved outbound message tenant_id=%s chat_id=%s message_id=%s",
+                    "Saved outbound message tenant_id=%s chat_id=%s message_id=%s username=%s",
                     tenant_id,
                     chat_id,
+                    msg.id,
+                    username or "None",
+                )
+            else:
+                logger.warning(
+                    "Outbound message not saved: chat_id unknown tenant_id=%s message_id=%s",
+                    tenant_id,
                     msg.id,
                 )
         except Exception as e:

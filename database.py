@@ -111,6 +111,18 @@ def init_db() -> None:
                 if result.fetchone() is None:
                     conn.execute(text("ALTER TABLE message ADD COLUMN username VARCHAR(255)"))
                     conn.commit()
+                
+                # Remove telegram_chat_id column if it exists (migrate to chat_id only)
+                result = conn.execute(
+                    text("""
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name='message' AND column_name='telegram_chat_id'
+                    """)
+                )
+                if result.fetchone() is not None:
+                    conn.execute(text("ALTER TABLE message DROP COLUMN telegram_chat_id"))
+                    conn.commit()
     except Exception:
         # Column might already exist or table doesn't exist yet - ignore
         pass

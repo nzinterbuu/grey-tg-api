@@ -33,7 +33,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from telethon import events
-from telethon.tl.types import User
+from telethon.tl.types import User, Chat, Channel
 
 from config import CALLBACK_SIGNING_SECRET
 from database import SessionLocal
@@ -195,17 +195,32 @@ async def _save_incoming_message(tenant_id: uuid.UUID, event: events.NewMessage.
         msg = event.message
         sender = event.sender
         
-        # Extract username
+        # Extract username with @ prefix - prefer chat username (channel/group), then sender username
         username: str | None = None
-        if isinstance(sender, User) and getattr(sender, "username", None):
-            username = str(sender.username)
+        # Try to get chat entity (for channels/groups) - this is async but needed for username
+        try:
+            chat = await event.get_chat()
+            if chat:
+                un = getattr(chat, "username", None)
+                if un:
+                    username = f"@{un}" if not str(un).startswith("@") else str(un)
+        except Exception:
+            # If get_chat fails, fall back to sender username
+            pass
+        # Fallback to sender username (for direct messages or if chat username unavailable)
+        if not username and isinstance(sender, User):
+            un = getattr(sender, "username", None)
+            if un:
+                username = f"@{un}" if not str(un).startswith("@") else str(un)
         
-        # Extract phone number
+        # Extract phone number (only available for User entities)
         phone_number: str | None = None
-        if isinstance(sender, User) and getattr(sender, "phone", None):
-            phone_number = str(sender.phone)
+        if isinstance(sender, User):
+            ph = getattr(sender, "phone", None)
+            if ph:
+                phone_number = str(ph)
         
-        # Extract other fields
+        # Extract other fields - chat_id is always available from event
         chat_id: int = event.chat_id
         message_id: int = getattr(msg, "id", 0) or 0
         sender_id: int | None = getattr(sender, "id", None) if sender else event.sender_id
@@ -229,10 +244,11 @@ async def _save_incoming_message(tenant_id: uuid.UUID, event: events.NewMessage.
             db.commit()
             db.refresh(message)
         logger.info(
-            "Saved incoming message tenant_id=%s chat_id=%s message_id=%s",
+            "Saved incoming message tenant_id=%s chat_id=%s message_id=%s username=%s",
             tenant_id,
             chat_id,
             message_id,
+            username or "None",
         )
     except Exception as e:
         logger.exception("Failed to save incoming message tenant_id=%s error=%s", tenant_id, e)
@@ -244,10 +260,10 @@ async def _run_dispatcher(tenant_id: uuid.UUID, callback_url: str) -> None:
         _clients[tenant_id] = client
 
     async def on_new_message(event: events.NewMessage.Event) -> None:
+        # Save message to database first so it is always persisted before callback
+        await _save_incoming_message(tenant_id, event)
         payload = _payload_from_event(tenant_id, event)
         asyncio.create_task(_post_callback(callback_url, payload, tenant_id))
-        # Save message to database (await so it runs before handler returns and event is still valid)
-        await _save_incoming_message(tenant_id, event)
 
     try:
         await client.connect()
