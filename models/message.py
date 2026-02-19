@@ -1,9 +1,7 @@
-"""Message table: all sent and received messages per tenant."""
-
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -11,7 +9,7 @@ from models.tenant import Base
 
 
 class Message(Base):
-    """Stores inbound and outbound messages with delivery status."""
+    """Message table for storing incoming and outbound messages."""
 
     __tablename__ = "message"
 
@@ -20,51 +18,25 @@ class Message(Base):
         primary_key=True,
         default=uuid.uuid4,
     )
-    direction: Mapped[str] = mapped_column(
-        String(10),
-        nullable=False,
-        comment="in = inbound, out = outbound",
-    )
     tenant_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("tenant.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    status: Mapped[str] = mapped_column(
-        String(64),
-        nullable=False,
-        default="sent",
-        comment="Delivery status, e.g. sent, delivered, read, failed",
-    )
-    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    timestamp: Mapped[datetime] = mapped_column(
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    phone_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sender_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    date: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        comment="When the message was sent or received",
     )
-    updated_at: Mapped[datetime] = mapped_column(
+    incoming: Mapped[bool] = mapped_column(default=True, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
-        onupdate=func.now(),
         nullable=False,
-        comment="When the delivery status was last updated",
-    )
-    address: Mapped[str] = mapped_column(
-        String(256),
-        nullable=False,
-        default="",
-        comment="Phone number, chat_id, or username of the other party",
-    )
-    telegram_message_id: Mapped[int | None] = mapped_column(
-        BigInteger,
-        nullable=True,
-        index=True,
-        comment="Telegram message id for correlation and read-receipt updates",
-    )
-    telegram_chat_id: Mapped[int | None] = mapped_column(
-        BigInteger,
-        nullable=True,
-        index=True,
-        comment="Telegram chat/peer id for read-receipt updates",
     )

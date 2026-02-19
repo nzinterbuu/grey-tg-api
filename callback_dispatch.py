@@ -181,6 +181,47 @@ def _payload_from_event(tenant_id: uuid.UUID, event: events.NewMessage.Event) ->
     }
 
 
+async def _save_incoming_message(tenant_id: uuid.UUID, event: events.NewMessage.Event) -> None:
+    """Save incoming message to database with username, phone_number, and chat_id."""
+    try:
+        msg = event.message
+        sender = event.sender
+        
+        # Extract username
+        username: str | None = None
+        if isinstance(sender, User) and getattr(sender, "username", None):
+            username = str(sender.username)
+        
+        # Extract phone number
+        phone_number: str | None = None
+        if isinstance(sender, User) and getattr(sender, "phone", None):
+            phone_number = str(sender.phone)
+        
+        # Extract other fields
+        chat_id: int = event.chat_id
+        message_id: int = getattr(msg, "id", 0) or 0
+        sender_id: int | None = getattr(sender, "id", None) if sender else event.sender_id
+        text = (msg.text or "").strip() if msg.text else None
+        
+        # Save to database
+        with SessionLocal() as db:
+            message = Message(
+                tenant_id=tenant_id,
+                chat_id=chat_id,
+                message_id=message_id,
+                username=username,
+                phone_number=phone_number,
+                text=text,
+                sender_id=sender_id,
+                date=msg.date,  # Telethon's msg.date is already a datetime object
+                incoming=True,
+            )
+            db.add(message)
+            db.commit()
+    except Exception as e:
+        logger.exception("Failed to save incoming message tenant_id=%s error=%s", tenant_id, e)
+
+
 async def _run_dispatcher(tenant_id: uuid.UUID, callback_url: str) -> None:
     client = build_client(tenant_id)
     async with _lock:
@@ -188,35 +229,9 @@ async def _run_dispatcher(tenant_id: uuid.UUID, callback_url: str) -> None:
 
     async def on_new_message(event: events.NewMessage.Event) -> None:
         payload = _payload_from_event(tenant_id, event)
-        # Persist inbound message to message table
-        try:
-            msg = event.message
-            text = (msg.text or "").strip() if msg.text else ""
-            sender_id = getattr(sender, "id", None) if (sender := event.sender) else event.sender_id
-            sender_id = sender_id or 0
-            sender_username = getattr(sender, "username", None) if isinstance(sender, User) else None
-            address = f"@{sender_username}" if sender_username else str(sender_id)
-            msg_date = msg.date
-            if hasattr(msg_date, "tzinfo") and msg_date.tzinfo is None:
-                from datetime import timezone
-                msg_date = msg_date.replace(tzinfo=timezone.utc)
-            message_id = getattr(msg, "id", 0) or 0
-            with SessionLocal() as db:
-                in_msg = Message(
-                    direction="in",
-                    tenant_id=tenant_id,
-                    status="received",
-                    content=text,
-                    timestamp=msg_date,
-                    address=address,
-                    telegram_message_id=message_id if message_id else None,
-                    telegram_chat_id=event.chat_id,
-                )
-                db.add(in_msg)
-                db.commit()
-        except Exception as e:
-            logger.warning("on_new_message: failed to persist message tenant_id=%s error=%s", tenant_id, e)
         asyncio.create_task(_post_callback(callback_url, payload, tenant_id))
+        # Save message to database
+        asyncio.create_task(_save_incoming_message(tenant_id, event))
 
     try:
         await client.connect()

@@ -10,14 +10,13 @@ else PHONE_NOT_IN_CONTACTS or PHONE_NOT_IN_CONTACTS_OR_NOT_ON_TELEGRAM.
 """
 
 import logging
-from datetime import timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from telethon import errors as tg_errors
-from telethon import utils as tg_utils
+from telethon.tl.types import User
 
 from database import get_session
 from models.tenant import Tenant
@@ -127,29 +126,45 @@ async def send_message(
                 detail={"error": "send_failed", "message": str(e) or type(e).__name__},
             ) from e
 
-        # Persist outbound message to message table
-        msg_date = msg.date
-        if msg_date.tzinfo is None:
-            msg_date = msg_date.replace(tzinfo=timezone.utc)
-        try:
-            telegram_chat_id = tg_utils.get_peer_id(msg.peer_id) if getattr(msg, "peer_id", None) else None
-            out_msg = Message(
-                direction="out",
-                tenant_id=tenant_id,
-                status="sent",
-                content=body.text or "",
-                timestamp=msg_date,
-                address=peer_resolved or "",
-                telegram_message_id=msg.id,
-                telegram_chat_id=telegram_chat_id,
-            )
-            db.add(out_msg)
-            db.commit()
-        except Exception as e:
-            logger.warning("send_message: failed to persist message tenant=%s error=%s", tenant_id, e)
-            db.rollback()
-
         date_str = msg.date.isoformat() if hasattr(msg.date, "isoformat") else str(msg.date)
+        
+        # Save outbound message to database
+        try:
+            # Extract username and phone_number from entity
+            username: str | None = None
+            phone_number: str | None = None
+            chat_id: int | None = None
+            
+            if isinstance(entity, User):
+                username = getattr(entity, "username", None)
+                if username:
+                    username = str(username)
+                phone_number = getattr(entity, "phone", None)
+                if phone_number:
+                    phone_number = str(phone_number)
+                chat_id = entity.id
+            else:
+                # For Chat or Channel, use entity.id as chat_id
+                chat_id = getattr(entity, "id", None)
+            
+            if chat_id is not None:
+                message = Message(
+                    tenant_id=tenant_id,
+                    chat_id=chat_id,
+                    message_id=msg.id,
+                    username=username,
+                    phone_number=phone_number,
+                    text=body.text,
+                    sender_id=None,  # Outbound messages don't have a sender_id
+                    date=msg.date,
+                    incoming=False,
+                )
+                db.add(message)
+                db.commit()
+        except Exception as e:
+            logger.exception("Failed to save outbound message tenant_id=%s error=%s", tenant_id, e)
+            # Don't fail the request if saving to DB fails
+        
         return SendMessageResponse(
             ok=True,
             peer_resolved=peer_resolved,
@@ -228,24 +243,6 @@ async def send_read_receipt(
                 status_code=400,
                 detail={"error": "read_receipt_failed", "message": str(e) or type(e).__name__},
             ) from e
-
-        # Update delivery status of inbound messages in this chat up to max_id
-        try:
-            peer_id = tg_utils.get_peer_id(entity)
-            db.execute(
-                update(Message)
-                .where(
-                    Message.tenant_id == tenant_id,
-                    Message.direction == "in",
-                    Message.telegram_chat_id == peer_id,
-                    Message.telegram_message_id <= body.max_id,
-                )
-                .values(status="read")
-            )
-            db.commit()
-        except Exception as e:
-            logger.warning("send_read_receipt: failed to update message status tenant=%s error=%s", tenant_id, e)
-            db.rollback()
 
         return ReadReceiptResponse(ok=True, message="Read receipt sent.")
     finally:

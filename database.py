@@ -50,20 +50,64 @@ def init_db() -> None:
                 if r.fetchone() is None:
                     conn.execute(text(f"ALTER TABLE tenant_auth ADD COLUMN {col} {spec}"))
                     conn.commit()
-            # Message table: add telegram_* columns if missing
-            for col, spec in [
-                ("telegram_message_id", "BIGINT"),
-                ("telegram_chat_id", "BIGINT"),
-            ]:
-                r = conn.execute(
-                    text(
-                        "SELECT 1 FROM information_schema.columns "
-                        "WHERE table_name='message' AND column_name=:c"
-                    ),
-                    {"c": col},
+            
+            # Message table migrations
+            # Check if message table exists
+            result = conn.execute(
+                text("""
+                    SELECT table_name 
+                    FROM information_schema.tables 
+                    WHERE table_name='message'
+                """)
+            )
+            if result.fetchone() is not None:
+                # Table exists, check for column migrations
+                
+                # Rename address to chat_id if address exists and chat_id doesn't
+                result = conn.execute(
+                    text("""
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name='message' AND column_name='address'
+                    """)
                 )
-                if r.fetchone() is None:
-                    conn.execute(text(f"ALTER TABLE message ADD COLUMN {col} {spec}"))
+                has_address = result.fetchone() is not None
+                
+                result = conn.execute(
+                    text("""
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name='message' AND column_name='chat_id'
+                    """)
+                )
+                has_chat_id = result.fetchone() is not None
+                
+                if has_address and not has_chat_id:
+                    conn.execute(text("ALTER TABLE message RENAME COLUMN address TO chat_id"))
+                    conn.commit()
+                
+                # Add phone_number column if it doesn't exist
+                result = conn.execute(
+                    text("""
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name='message' AND column_name='phone_number'
+                    """)
+                )
+                if result.fetchone() is None:
+                    conn.execute(text("ALTER TABLE message ADD COLUMN phone_number VARCHAR(32)"))
+                    conn.commit()
+                
+                # Add username column if it doesn't exist
+                result = conn.execute(
+                    text("""
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name='message' AND column_name='username'
+                    """)
+                )
+                if result.fetchone() is None:
+                    conn.execute(text("ALTER TABLE message ADD COLUMN username VARCHAR(255)"))
                     conn.commit()
     except Exception:
         # Column might already exist or table doesn't exist yet - ignore
