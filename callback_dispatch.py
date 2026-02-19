@@ -263,11 +263,17 @@ async def _save_incoming_message(tenant_id: uuid.UUID, event: events.NewMessage.
             db.add(message)
             db.commit()
             db.refresh(message)
+        content_preview = (content or "")[:60].strip()
+        if content and len(content) > 60:
+            content_preview += "..."
         logger.info(
-            "Saved incoming message tenant_id=%s chat_id=%s message_id=%s",
+            "INCOMING MESSAGE saved to DB tenant_id=%s chat_id=%s telegram_message_id=%s username=%s phone=%s content=%r",
             tenant_id,
             chat_id,
             message_id,
+            username or "-",
+            phone_number or "-",
+            content_preview or "(no content)",
         )
     except Exception as e:
         logger.exception("Failed to save incoming message tenant_id=%s chat_id=%s error=%s", tenant_id, chat_id, e)
@@ -279,6 +285,19 @@ async def _run_dispatcher(tenant_id: uuid.UUID, callback_url: str) -> None:
         _clients[tenant_id] = client
 
     async def on_new_message(event: events.NewMessage.Event) -> None:
+        # Log incoming message as soon as it is received
+        msg = event.message
+        msg_id = getattr(msg, "id", None)
+        text_preview = (msg.text or "")[:80].strip()
+        if len((msg.text or "")) > 80:
+            text_preview += "..."
+        logger.info(
+            "INCOMING MESSAGE received tenant_id=%s chat_id=%s telegram_message_id=%s text_preview=%r",
+            tenant_id,
+            getattr(event, "chat_id", None),
+            msg_id,
+            text_preview or "(no text)",
+        )
         # Save message to database first so it is always persisted before callback
         await _save_incoming_message(tenant_id, event)
         payload = _payload_from_event(tenant_id, event)
