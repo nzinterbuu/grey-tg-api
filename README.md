@@ -166,20 +166,53 @@ MVP uses in-memory limits (single process). For multi-worker production, use Red
 
 ## Inbound message dispatch
 
-When a tenant is **authorized** and has a **`callback_url`**, a background task keeps a Telethon client connected, listens for `NewMessage(incoming=True)`, and POSTs each event to `callback_url`.
+When a tenant is **authorized** and has a **`callback_url`**, a background task keeps a Telethon client connected, listens for `NewMessage(incoming=True)`, and POSTs each incoming message to `callback_url`.
 
-**Payload (JSON):**
+### Callback request
+
+- **Method:** `POST`
+- **URL:** The tenant's `callback_url`
+- **Content-Type:** `application/json`
+- **Body:** JSON payload describing the incoming message (see below).
+- **Headers:** Optional `X-Signature` (HMAC-SHA256 of body; see below).
+
+For every incoming message the server tries to resolve the **username** and **phone number** of the Telegram account that sent the message. When available, these are stored in the `message` table (`username`, `phone_number`) and included in the callback payload. Username and phone may be missing if the sender has not set a username or has hidden their phone number in Telegram privacy settings.
+
+### Callback payload (JSON)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `tenant_id` | string (UUID) | Tenant that received the message. |
+| `event` | string | Always `"message"` for new messages. |
+| `message` | object | Message and sender details (see below). |
+
+**`message` object:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `chat_id` | integer | Telegram chat ID of the conversation (use as `peer` for read-receipt and send). |
+| `message_id` | integer | Telegram message ID (use as `max_id` for read-receipt). |
+| `sender_id` | integer \| null | Telegram user ID of the sender. |
+| `sender_username` | string \| null | Sender's username without `@` (legacy). |
+| `username` | string \| null | Sender (or chat) username with `@` prefix when available (e.g. `@lahinvand`). |
+| `phone_number` | string \| null | Sender's phone number in E.164 when available (e.g. `+79001234567`). Omitted or null if not visible (privacy). |
+| `text` | string | Message text. |
+| `date` | string | ISO 8601 datetime when the message was sent (UTC). |
+
+**Example payload:**
 
 ```json
 {
-  "tenant_id": "<uuid>",
+  "tenant_id": "550e8400-e29b-41d4-a716-446655440000",
   "event": "message",
   "message": {
-    "chat_id": 123,
+    "chat_id": 123456789,
     "message_id": 456,
     "sender_id": 789,
-    "sender_username": "user",
-    "text": "...",
+    "sender_username": "lahinvand",
+    "username": "@lahinvand",
+    "phone_number": "+79001234567",
+    "text": "Hello",
     "date": "2025-01-25T12:00:00+00:00"
   }
 }

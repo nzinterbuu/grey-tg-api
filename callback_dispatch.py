@@ -141,6 +141,8 @@ async def send_test_callback(tenant_id: uuid.UUID, callback_url: str) -> tuple[b
             "message_id": 0,
             "sender_id": 0,
             "sender_username": "test",
+            "username": "@test",
+            "phone_number": None,
             "text": "Test callback from Grey TG admin.",
             "date": datetime.now(timezone.utc).isoformat(),
         },
@@ -156,26 +158,43 @@ async def send_test_callback(tenant_id: uuid.UUID, callback_url: str) -> tuple[b
         return False, str(e)
 
 
-def _payload_from_event(tenant_id: uuid.UUID, event: events.NewMessage.Event) -> dict[str, Any]:
+async def _payload_from_event(tenant_id: uuid.UUID, event: events.NewMessage.Event) -> dict[str, Any]:
     msg = event.message
-    sender = event.sender
-    sender_id: int | None = getattr(sender, "id", None) if sender else event.sender_id
+    sender = getattr(event, "sender", None)
+    if sender is None and hasattr(event, "get_sender"):
+        try:
+            sender = await event.get_sender()
+        except Exception:
+            pass
+    sender_id: int | None = getattr(sender, "id", None) if sender else getattr(event, "sender_id", None)
     sender_username: str | None = None
-    if isinstance(sender, User) and getattr(sender, "username", None):
-        sender_username = str(sender.username)
+    username: str | None = None
+    phone_number: str | None = None
+    if isinstance(sender, User):
+        un = getattr(sender, "username", None)
+        if un:
+            un_str = str(un)
+            sender_username = un_str
+            username = f"@{un_str}" if not un_str.startswith("@") else un_str
+        ph = getattr(sender, "phone", None)
+        if ph:
+            phone_number = str(ph)
     date_val = msg.date
     date_str = date_val.isoformat() if hasattr(date_val, "isoformat") else str(date_val)
     text = (msg.text or "").strip() if msg.text else ""
     message_id: int = getattr(msg, "id", 0) or 0
+    chat_id = _get_chat_id_from_event(event)
 
     return {
         "tenant_id": str(tenant_id),
         "event": "message",
         "message": {
-            "chat_id": event.chat_id,
+            "chat_id": chat_id if chat_id is not None else getattr(event, "chat_id", None),
             "message_id": message_id,
             "sender_id": sender_id,
             "sender_username": sender_username,
+            "username": username,
+            "phone_number": phone_number,
             "text": text,
             "date": date_str,
         },
@@ -209,8 +228,13 @@ def _get_chat_id_from_event(event: events.NewMessage.Event) -> int | None:
 async def _save_incoming_message(tenant_id: uuid.UUID, event: events.NewMessage.Event) -> None:
     """Save incoming message to database with username, phone_number, and chat_id."""
     msg = event.message
-    sender = event.sender
-        
+    sender = getattr(event, "sender", None)
+    if sender is None and hasattr(event, "get_sender"):
+        try:
+            sender = await event.get_sender()
+        except Exception:
+            pass
+
     # Resolve chat_id as integer
     chat_id = _get_chat_id_from_event(event)
     if chat_id is None:
@@ -220,8 +244,8 @@ async def _save_incoming_message(tenant_id: uuid.UUID, event: events.NewMessage.
             getattr(event, "chat_id", None),
         )
         return
-    
-    # Extract username with @ prefix
+
+    # Extract username with @ prefix (chat for channels/groups, then sender for DMs)
     username: str | None = None
     try:
         chat = await event.get_chat()
@@ -235,8 +259,8 @@ async def _save_incoming_message(tenant_id: uuid.UUID, event: events.NewMessage.
         un = getattr(sender, "username", None)
         if un:
             username = f"@{un}" if not str(un).startswith("@") else str(un)
-    
-    # Phone number (User only)
+
+    # Phone number (only available for User; may be hidden by Telegram privacy)
     phone_number: str | None = None
     if isinstance(sender, User):
         ph = getattr(sender, "phone", None)
@@ -300,7 +324,7 @@ async def _run_dispatcher(tenant_id: uuid.UUID, callback_url: str) -> None:
         )
         # Save message to database first so it is always persisted before callback
         await _save_incoming_message(tenant_id, event)
-        payload = _payload_from_event(tenant_id, event)
+        payload = await _payload_from_event(tenant_id, event)
         asyncio.create_task(_post_callback(callback_url, payload, tenant_id))
 
     try:
