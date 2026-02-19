@@ -28,7 +28,7 @@ class Message(Base):
     message_id: Mapped[int] = mapped_column(BigInteger, nullable=False, name="telegram_message_id")
     username: Mapped[str | None] = mapped_column(String(255), nullable=True)
     phone_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    text: Mapped[str | None] = mapped_column(Text, nullable=True, name="content")
     sender_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     date: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
