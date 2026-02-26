@@ -1,4 +1,4 @@
-"""Tenant list and create."""
+"""Tenant list, create, and update."""
 
 from uuid import UUID
 
@@ -6,9 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from callback_dispatch import start_dispatcher, stop_dispatcher
 from database import get_session
 from models.tenant import Tenant
-from schemas import CreateTenantRequest, TenantResponse
+from models.tenant_auth import TenantAuth
+from schemas import CreateTenantRequest, TenantResponse, UpdateTenantRequest
 
 router = APIRouter(prefix="/tenants", tags=["tenants"])
 
@@ -47,3 +49,35 @@ def create_tenant(
     db.commit()
     db.refresh(t)
     return _tenant_response(t)
+
+
+@router.patch("/{tenant_id}", response_model=TenantResponse)
+async def update_tenant(
+    tenant_id: UUID,
+    body: UpdateTenantRequest,
+    db: Session = Depends(get_session),
+) -> TenantResponse:
+    """Update an existing tenant (name and/or callback_url). If callback_url changes and the tenant is authorized, the inbound dispatcher is restarted with the new URL."""
+    row = db.execute(select(Tenant).where(Tenant.id == tenant_id)).scalars().first()
+    if not row:
+        raise HTTPException(status_code=404, detail={"error": "not_found", "message": "Tenant not found."})
+    if body.name is None and body.callback_url is None:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "bad_request", "message": "Provide at least one of name or callback_url."},
+        )
+    old_callback = row.callback_url
+    if body.name is not None:
+        row.name = body.name.strip()
+    if body.callback_url is not None:
+        row.callback_url = (body.callback_url.strip() or None)
+    db.commit()
+    db.refresh(row)
+    # Restart dispatcher if callback_url changed and tenant is authorized
+    if old_callback != row.callback_url:
+        auth = db.execute(select(TenantAuth).where(TenantAuth.tenant_id == tenant_id)).scalars().first()
+        if auth and auth.authorized:
+            await stop_dispatcher(tenant_id)
+            if row.callback_url:
+                await start_dispatcher(tenant_id, row.callback_url)
+    return _tenant_response(row)

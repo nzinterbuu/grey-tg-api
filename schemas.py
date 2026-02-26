@@ -84,6 +84,13 @@ class CreateTenantRequest(BaseModel):
     callback_url: str | None = Field(None, max_length=2048)
 
 
+class UpdateTenantRequest(BaseModel):
+    """At least one field should be provided."""
+
+    name: str | None = Field(None, min_length=1, max_length=255)
+    callback_url: str | None = Field(None, max_length=2048)
+
+
 class TenantResponse(BaseModel):
     id: str
     name: str

@@ -54,7 +54,7 @@ uvicorn main:app --reload --port 8000
 ## Structure
 
 - `main.py` — App, CORS, lifespan (init DB, start/stop dispatchers), `/`, `/health`; mounts `tenants`, `tenant_auth`, `tenant_messages`, `tenant_callbacks`
-- `routers/tenants.py` — `GET /tenants`, `GET /tenants/{id}`, `POST /tenants` (create: name, callback_url)
+- `routers/tenants.py` — `GET /tenants`, `GET /tenants/{id}`, `POST /tenants` (create), `PATCH /tenants/{id}` (update callback or name)
 - `routers/tenant_auth.py` — `GET /status`, `POST /auth/start`, `POST /auth/verify`, `POST /logout`; starts dispatcher on verify if `callback_url` set, stops on logout
 - `routers/tenant_messages.py` — `POST /messages/send` (rate-limited)
 - `routers/tenant_callbacks.py` — `POST /tenants/{id}/callback/test` (POST test payload to tenant callback_url)
@@ -106,6 +106,7 @@ Tables are created on app startup via `init_db()`.
 | `GET` | `/tenants` | List all tenants |
 | `GET` | `/tenants/{id}` | Get one tenant |
 | `POST` | `/tenants` | Create tenant. Body: `{ "name": "...", "callback_url": "..."? }` |
+| `PATCH` | `/tenants/{id}` | Update tenant. Body: `{ "name": "...", "callback_url": "..." }` (both optional; at least one required). If `callback_url` changes and the tenant is authorized, the inbound message dispatcher is restarted with the new URL. |
 
 ## Tenant auth endpoints
 
